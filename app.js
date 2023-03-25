@@ -10,6 +10,7 @@ app.use(express.json());
 const dbPath = path.join(__dirname, "twitterClone.db");
 let db;
 const secret_token = "awDEklIE_dselOOne_serc";
+let accessToken;
 
 (async () => {
   try {
@@ -37,25 +38,27 @@ const authenticateAccessToken = (req, res, next) => {
     jwtToken = authorHeader.split(" ")[1];
   }
 
-  if (jwtToken === undefined) {
-    res.status(401);
-    res.send("Invalid JWT Token");
-  } else {
-    jwt.verify(jwtToken, secret_token, async (err, payload) => {
-      if (err) {
-        res.status(401);
-        res.send("Invalid JWT Token");
-      } else {
-        req.username = payload.username;
-        next();
-      }
-    });
+  if (!jwtToken) {
+    res.status(401).send("Invalid JWT Token");
+    return;
   }
+  jwt.verify(jwtToken, secret_token, async (err, payload) => {
+    if (err) {
+      res.status(401).send("Invalid JWT Token");
+    } else {
+      req.username = payload.username;
+      next();
+    }
+  });
 };
 
 const getUserByUserName = async (username) => {
   const getUserQuery = `SELECT * FROM user WHERE username = ?;`;
   return await db.get(getUserQuery, username);
+};
+const getUserId = async (username) => {
+  const user = await getUserByUserName(username);
+  return user.user_id;
 };
 
 // Creating new user in DB API -1
@@ -110,6 +113,7 @@ app.post("/login/", async (req, res) => {
       } else {
         const payload = { username: username };
         const jwtToken = jwt.sign(payload, secret_token);
+        accessToken = jwtToken;
         res.send({ jwtToken });
       }
     }
@@ -121,10 +125,9 @@ app.post("/login/", async (req, res) => {
 // API - 3
 // Getting the tweets of the users whom the user follows
 app.get("/user/tweets/feed/", authenticateAccessToken, async (req, res) => {
-  const user = await getUserByUserName(req.username);
-  const userId = user.user_id;
+  const userId = await getUserId(req.username);
 
-  const getTweetsQuery = `SELECT  u.username, t.tweet, t.date_time
+  const getTweetsQuery = `SELECT  u.username, t.tweet, t.date_time AS dateTime
     FROM tweet t
     JOIN user u ON t.user_id = u.user_id
     WHERE t.user_id IN (
@@ -135,21 +138,13 @@ app.get("/user/tweets/feed/", authenticateAccessToken, async (req, res) => {
     ORDER BY t.date_time DESC
     LIMIT 4;`;
   let tweetsArr = await db.all(getTweetsQuery, userId);
-  tweetsArr = tweetsArr.map((obj) => {
-    return {
-      ...obj,
-      dateTime: obj.date_time,
-      date_time: undefined,
-    };
-  });
   res.send(tweetsArr);
 });
 
 // API -- 4
 // Get names of the people that user follows
 app.get("/user/following/", authenticateAccessToken, async (req, res) => {
-  const user = await getUserByUserName(req.username);
-  const userId = user.user_id;
+  const userId = await getUserId(req.username);
 
   const getNamesQuery = `SELECT u.name FROM 
   user u WHERE u.user_id IN (
@@ -163,14 +158,12 @@ app.get("/user/following/", authenticateAccessToken, async (req, res) => {
 // API-5
 // Get names of people who are following the user
 app.get("/user/followers/", authenticateAccessToken, async (req, res) => {
-  const user = await getUserByUserName(req.username);
-  const userId = user.user_id;
+  const userId = await getUserId(req.username);
 
   const getNamesQuery = `SELECT name FROM user
     WHERE user.user_id IN (
         SELECT follower_user_id FROM
-        follower WHERE following_user_id = ?
-    );`;
+        follower WHERE following_user_id = ?);`;
   const namesArr = await db.all(getNamesQuery, userId);
   res.send(namesArr);
 });
@@ -178,8 +171,7 @@ app.get("/user/followers/", authenticateAccessToken, async (req, res) => {
 // API-6
 // Get the tweet, likes count, replies count and date-time from users that user follows
 app.get("/tweets/:tweetId", authenticateAccessToken, async (req, res) => {
-  const user = await getUserByUserName(req.username);
-  const userId = user.user_id;
+  const userId = await getUserId(req.username);
   let { tweetId } = req.params;
   tweetId = parseInt(tweetId);
 
@@ -200,6 +192,59 @@ app.get("/tweets/:tweetId", authenticateAccessToken, async (req, res) => {
             ORDER BY t.date_time DESC;`;
     let tweetObj = await db.get(getTweetsQuery, tweetId);
     res.send(tweetObj);
+  } else {
+    res.status(401);
+    res.send("Invalid Request");
+  }
+});
+
+// API -- 9
+// Getting all the tweets of the user
+app.get("/user/tweets/", authenticateAccessToken, async (req, res) => {
+  const userId = await getUserId(req.username);
+
+  const getAllTweetsQuery = `SELECT t.tweet, COUNT(DISTINCT like_id) AS likes, COUNT(DISTINCT reply_id) AS replies, t.date_time AS dateTime 
+    FROM tweet t JOIN user u ON t.user_id = u.user_id JOIN like l ON t.tweet_id = l.tweet_id 
+    JOIN reply r ON t.tweet_id = r.tweet_id WHERE u.user_id = ? 
+    GROUP BY t.tweet_id;`;
+  const allUserTweets = await db.all(getAllTweetsQuery, userId);
+  console.log(userId);
+  res.send(allUserTweets);
+});
+
+// API - 10
+// Post a new tweet into tweet table as login user
+app.post("/user/tweets", authenticateAccessToken, async (req, res) => {
+  const userId = await getUserId(req.username);
+  const { tweet } = req.body;
+  const dateString = new Date()
+    .toISOString()
+    .replace("T", " ")
+    .replace(/\.\d+Z$/, "");
+
+  const newTweetQuery = `INSERT INTO tweet (tweet, user_id, date_time)
+            VALUES (?, ?, ?);`;
+  await db.run(newTweetQuery, [tweet, userId, dateString]);
+  res.send("Created a Tweet");
+});
+
+// API - 11
+// Delete tweet by tweetId of curr user
+app.delete("/tweets/:tweetId", authenticateAccessToken, async (req, res) => {
+  const userId = await getUserId(req.username);
+  let { tweetId } = req.params;
+  tweetId = parseInt(tweetId);
+
+  // Getting all the tweetIds of the user
+  const getAllTweetIdQuery = `SELECT t.tweet_id FROM 
+    tweet t JOIN user u ON t.user_id = u.user_id WHERE u.user_id = ?;`;
+  const allTweetIds = await db.all(getAllTweetIdQuery, userId);
+  const tweetIdArr = allTweetIds.map((obj) => obj.tweet_id);
+
+  if (tweetIdArr.includes(tweetId)) {
+    const delTweetQuery = `DELETE FROM tweet WHERE tweet.tweet_id = ?;`;
+    await db.run(delTweetQuery, tweetId);
+    res.send("Tweet Removed");
   } else {
     res.status(401);
     res.send("Invalid Request");
