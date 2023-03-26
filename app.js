@@ -60,8 +60,34 @@ const getUserId = async (username) => {
   const user = await getUserByUserName(username);
   return user.user_id;
 };
+// retrieves UserIds of the users whom the logged-in user follows (UF)
+const getUserIdsOfUserFollowing = async (loggedUserId) => {
+  const userFollowingUserIds = `
+        SELECT
+        user.user_id
+        FROM user JOIN follower on user.user_id = follower.following_user_id
+        WHERE follower.follower_user_id = ?;`;
+  const userFollowingUsersArr = await db.all(
+    userFollowingUserIds,
+    loggedUserId
+  );
+  return userFollowingUsersArr.map((obj) => obj.user_id);
+};
 
-// Creating new user in DB API -1
+// check user requested tweet from the user he follows
+const isTweetFromUserFollowing = async (userId, tweetId) => {
+  // retrieve the tweet that user requested, by tweetId.
+  const getTweetQuery = `SELECT * FROM tweet WHERE tweet_id=?;`;
+  const tweetResult = await db.get(getTweetQuery, tweetId);
+
+  // get all user ids whom user follows
+  const userFollowingUsersArr = await getUserIdsOfUserFollowing(userId);
+
+  return userFollowingUsersArr.includes(tweetResult.user_id) ? true : false;
+};
+
+// API -1
+// Creating new user in DB
 app.post("/register/", async (req, res) => {
   const { username, password, name, gender } = req.body;
 
@@ -170,29 +196,16 @@ app.get("/user/followers/", authenticateAccessToken, async (req, res) => {
 
 // API-6
 // Get the tweet, likes count, replies count and date-time from users that user follows
-app.get("/tweets/:tweetId/", authenticateAccessToken, async (req, res) => {
+app.get("/tweets/:Id/", authenticateAccessToken, async (req, res) => {
   const userId = await getUserId(req.username);
-  let { tweetId } = req.params;
-  tweetId = parseInt(tweetId);
-  //   console.log(typeof userId, typeof tweetId);
+  const tweetId = parseInt(req.params.Id);
 
-  // retrieve the tweet that user asked specifically by tweetId.
-  const getTweetQuery = `SELECT * FROM tweet WHERE tweet_id=?;`;
-  const tweetResult = await db.get(getTweetQuery, tweetId);
+  const isUserRequestedValidTweet = await isTweetFromUserFollowing(
+    userId,
+    tweetId
+  );
 
-  // retrieves followers user+follower objects whom the logged-in user follows
-  const userFollowingUsersIds = `
-        SELECT
-        user.user_id
-        FROM user JOIN follower on user.user_id = follower.following_user_id
-        WHERE follower.follower_user_id = ?;`;
-  let userFollowingUsersArr = await db.all(userFollowingUsersIds, userId);
-  userFollowingUsersArr = userFollowingUsersArr.map((obj) => obj.user_id);
-
-  //   console.log(userFollowingUsersArr);
-  //   console.log(tweetResult);
-
-  if (userFollowingUsersArr.includes(tweetResult.user_id)) {
+  if (isUserRequestedValidTweet === true) {
     const getTweetsQuery = `SELECT t.tweet, COUNT(DISTINCT like_id) AS likes, COUNT(DISTINCT reply_id) AS replies, t.date_time AS dateTime
                FROM tweet t
                JOIN like ON t.tweet_id = like.tweet_id
@@ -202,6 +215,56 @@ app.get("/tweets/:tweetId/", authenticateAccessToken, async (req, res) => {
                ORDER BY t.date_time DESC;`;
     let tweetObj = await db.get(getTweetsQuery, tweetId);
     res.send(tweetObj);
+  } else {
+    res.status(401).send("Invalid Request");
+  }
+});
+
+// API - 7
+// Get the list of usernames who liked the tweet
+app.get("/tweets/:Id/likes/", authenticateAccessToken, async (req, res) => {
+  const userId = await getUserId(req.username);
+  const tweetId = parseInt(req.params.Id);
+
+  // checking whether user requested tweet from user he follows
+  const isUserRequestedValidTweet = await isTweetFromUserFollowing(
+    userId,
+    tweetId
+  );
+
+  if (isUserRequestedValidTweet === true) {
+    const getUsersQuery = `SELECT U.username FROM like L 
+    JOIN user U ON L.user_id = U.user_id 
+    WHERE L.tweet_id = ?;`;
+
+    const likedUsernamesArr = await db.all(getUsersQuery, tweetId);
+    const likes = likedUsernamesArr.map((obj) => obj.username);
+    res.send({ likes: likes });
+  } else {
+    res.status(401).send("Invalid Request");
+  }
+});
+
+// API - 8
+// Get list of people who replied for the tweet
+app.get("/tweets/:Id/replies/", authenticateAccessToken, async (req, res) => {
+  const userId = await getUserId(req.username);
+  const tweetId = parseInt(req.params.Id);
+
+  // checking whether user requested tweet from user he follows
+  const isUserRequestedValidTweet = await isTweetFromUserFollowing(
+    userId,
+    tweetId
+  );
+
+  if (isUserRequestedValidTweet === true) {
+    const getUserNameQuery = `SELECT U.name, R.reply FROM reply R 
+        JOIN user U ON R.user_id = U.user_id 
+        WHERE R.tweet_id = ?;`;
+
+    const repliedUsernamesArr = await db.all(getUserNameQuery, tweetId);
+    const replies = repliedUsernamesArr;
+    res.send({ replies: replies });
   } else {
     res.status(401).send("Invalid Request");
   }
