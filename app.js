@@ -170,31 +170,40 @@ app.get("/user/followers/", authenticateAccessToken, async (req, res) => {
 
 // API-6
 // Get the tweet, likes count, replies count and date-time from users that user follows
-app.get("/tweets/:tweetId", authenticateAccessToken, async (req, res) => {
+app.get("/tweets/:tweetId/", authenticateAccessToken, async (req, res) => {
   const userId = await getUserId(req.username);
   let { tweetId } = req.params;
   tweetId = parseInt(tweetId);
+  //   console.log(typeof userId, typeof tweetId);
 
-  const tweetIdsQuery = `SELECT t.tweet_id FROM tweet t WHERE t.user_id IN (
-      SELECT following_user_id FROM follower WHERE following_user_id = ?);`;
+  // retrieve the tweet that user asked specifically by tweetId.
+  const getTweetQuery = `SELECT * FROM tweet WHERE tweet_id=?;`;
+  const tweetResult = await db.get(getTweetQuery, tweetId);
 
-  const tweetIdObjArr = await db.all(tweetIdsQuery, userId);
-  const tweetIdArr = tweetIdObjArr.map((obj) => obj.tweet_id);
-  console.log(tweetIdArr);
+  // retrieves followers user+follower objects whom the logged-in user follows
+  const userFollowingUsersIds = `
+        SELECT
+        user.user_id
+        FROM user JOIN follower on user.user_id = follower.following_user_id
+        WHERE follower.follower_user_id = ?;`;
+  let userFollowingUsersArr = await db.all(userFollowingUsersIds, userId);
+  userFollowingUsersArr = userFollowingUsersArr.map((obj) => obj.user_id);
 
-  if (tweetIdArr.includes(tweetId)) {
-    const getTweetsQuery = `SELECT t.tweet, COUNT(DISTINCT like_id) AS likes, COUNT(DISTINCT reply_id) AS replies, t.date_time AS dateTime 
-            FROM tweet t
-            JOIN like ON t.tweet_id = like.tweet_id 
-            JOIN reply ON t.tweet_id = reply.tweet_id 
-            WHERE t.tweet_id = ? 
-            GROUP BY t.tweet_id 
-            ORDER BY t.date_time DESC;`;
+  //   console.log(userFollowingUsersArr);
+  //   console.log(tweetResult);
+
+  if (userFollowingUsersArr.includes(tweetResult.user_id)) {
+    const getTweetsQuery = `SELECT t.tweet, COUNT(DISTINCT like_id) AS likes, COUNT(DISTINCT reply_id) AS replies, t.date_time AS dateTime
+               FROM tweet t
+               JOIN like ON t.tweet_id = like.tweet_id
+               JOIN reply ON t.tweet_id = reply.tweet_id
+               WHERE t.tweet_id = ?
+               GROUP BY t.tweet_id
+               ORDER BY t.date_time DESC;`;
     let tweetObj = await db.get(getTweetsQuery, tweetId);
     res.send(tweetObj);
   } else {
-    res.status(401);
-    res.send("Invalid Request");
+    res.status(401).send("Invalid Request");
   }
 });
 
